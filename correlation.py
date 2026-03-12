@@ -5,6 +5,16 @@ import seaborn as sns
 
 # load data
 df = pd.read_csv('qatarcars.csv')
+
+size_readings = df[['width', 'height', 'trunk', 'seating', 'length', 'mass']]
+df_encoded_size = pd.get_dummies(size_readings, drop_first=True)
+high_corr_matrix = df_encoded_size.corr()
+sns.heatmap(high_corr_matrix, annot=True, cmap="coolwarm", square=True)
+plt.show()
+
+"""
+
+
 df = df.drop(columns = ['make', 'model', 'width', 'height', 'seating', 'trunk', 'length'])
 
 # encode data for corr matrix
@@ -29,3 +39,4 @@ plt.xlabel('Log(Price)')
 plt.ylabel('Frequency')
 plt.title('Distribution of Log(Price)')
 plt.show()
+"""
