@@ -5,26 +5,26 @@ import seaborn as sns
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 
-df = pd.read_csv("qatarcars.csv")
+df = pd.read_csv("spotify_songs.csv")
 
+# 1. Define the audio and categorical features
 keep_features = [
-    'origin', 'length', 'width', 'height', 'seating', 
-    'trunk', 'economy', 'horsepower', 'mass', 
-    'performance', 'type', 'enginetype'
+    'playlist_genre', 'danceability', 'energy', 'key', 'loudness', 
+    'mode', 'speechiness', 'acousticness', 'instrumentalness', 
+    'liveness', 'valence', 'tempo', 'duration_ms'
 ]
 
-formula = 'price ~ ' + ' + '.join(keep_features)
+# 2. Build the formula for track_popularity
+formula = 'track_popularity ~ ' + ' + '.join(keep_features)
 
+# 3. Fit the model
 model = smf.ols(formula, data=df).fit()
 print(model.summary())
 
-plt.figure(figsize=(12, 5))
-
-plt.subplot(1, 2, 1)
-sns.residplot(x=model.fittedvalues, y=model.resid)
-plt.xlabel('Fitted Sales')
+# 4. Visualization (Residuals)
+plt.figure(figsize=(8, 5))
+sns.residplot(x=model.fittedvalues, y=model.resid, lowess=True, line_kws={'color': 'red'})
+plt.xlabel('Predicted Popularity')
 plt.ylabel('Residuals')
-plt.title('Residuals vs Fitted Sales')
-
-plt.tight_layout()
+plt.title('Residuals vs Predicted Popularity')
 plt.show()
