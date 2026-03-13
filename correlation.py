@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt 
 import seaborn as sns
-import os
+
 
 # load data
 songs = pd.read_csv('spotify_songs.csv')
@@ -49,7 +49,16 @@ plt.tight_layout()
 plt.savefig('my_heatmap.png', bbox_inches='tight')
 plt.show()
 
-print(f"File saved to: {os.getcwd()}")
+strong_corr = corr_matrix[abs(corr_matrix) > 0.5]
+
+plt.figure(figsize=(10, 8))
+sns.heatmap(strong_corr, annot=True, cmap="coolwarm", center=0)
+plt.title("Strong Correlations (|r| > 0.5)")
+plt.xticks(rotation=45, ha='right')
+plt.yticks(rotation=0)
+plt.tight_layout()
+plt.savefig('my_heatmap_strongcorr.png', bbox_inches='tight')
+plt.show()
 
 
 
