@@ -1,14 +1,13 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, r2_score
-from statsmodels.stats.outliers_influence import variance_inflation_factor
+from sklearn.metrics import mean_squared_error
 import statsmodels.api as sm
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 # ── 1. Load & prep ────────────────────────────────────────────────────────────
 df = pd.read_csv("spotify_songs.csv")
@@ -22,138 +21,156 @@ df = df.drop(columns=[
 
 y = df["track_popularity"].values
 
-X = df[[
+X_full = df[[
     "playlist_genre", "danceability", "energy", "key", "loudness",
     "mode", "speechiness", "acousticness", "instrumentalness",
     "liveness", "valence", "tempo", "duration_ms"
-]]
-X = pd.get_dummies(X, columns=["playlist_genre"], drop_first=True)
-feature_names = X.columns.tolist()
-X_arr = X.values.astype(float)
+]].copy()
+X_full = pd.get_dummies(X_full, columns=["playlist_genre"], drop_first=True)
 
-# ── 2. 5-Fold Cross Validation — MSE per fold ─────────────────────────────────
-kf = KFold(n_splits=5, shuffle=True, random_state=42)
-fold_mses = []
+# ── 2. Define 3 candidate models ──────────────────────────────────────────────
+candidate_models = {
+    "M1: Audio features only": [
+        "danceability", "energy", "loudness",
+        "acousticness", "valence", "tempo"
+    ],
+    "M2: Genre + audio": [
+        "danceability", "energy", "loudness", "acousticness", "valence", "tempo"
+    ] + [c for c in X_full.columns if c.startswith("playlist_genre")],
+    "M3: Full model": list(X_full.columns),
+}
 
-print("=" * 45)
-print("  5-Fold Cross Validation — OLS Linear Regression")
-print("=" * 45)
+# ── 3. Fit each candidate model and compute CV(K) ─────────────────────────────
+K = 5
+kf = KFold(n_splits=K, shuffle=True, random_state=42)
 
-for fold, (train_idx, val_idx) in enumerate(kf.split(X_arr), start=1):
-    X_tr, X_val = X_arr[train_idx], X_arr[val_idx]
-    y_tr, y_val = y[train_idx], y[val_idx]
+print("=" * 55)
+print(f"  OLS Model Selection — CV(K={K}) for each candidate")
+print("=" * 55)
 
-    scaler = StandardScaler()
-    X_tr_s  = scaler.fit_transform(X_tr)
-    X_val_s = scaler.transform(X_val)
+cv_results = {}
 
-    model = LinearRegression()
-    model.fit(X_tr_s, y_tr)
+for model_name, features in candidate_models.items():
+    X_m = X_full[features].values.astype(float)
+    fold_mses = []
 
-    preds = model.predict(X_val_s)
-    mse   = mean_squared_error(y_val, preds)
-    fold_mses.append(mse)
-    print(f"  Fold {fold}  MSE = {mse:.4f}   RMSE = {np.sqrt(mse):.4f}")
+    print(f"\n  {model_name}")
+    print(f"  Features: {features}")
+    print(f"  {'─'*50}")
 
-print("-" * 45)
-print(f"  Mean MSE  : {np.mean(fold_mses):.4f}")
-print(f"  Std  MSE  : {np.std(fold_mses):.4f}")
-print(f"  Mean RMSE : {np.mean(np.sqrt(fold_mses)):.4f}")
+    for fold, (train_idx, val_idx) in enumerate(kf.split(X_m), start=1):
+        X_tr,  X_val = X_m[train_idx],  X_m[val_idx]
+        y_tr,  y_val = y[train_idx],    y[val_idx]
+
+        # Scale inside each fold — no leakage
+        scaler = StandardScaler()
+        X_tr_s  = scaler.fit_transform(X_tr)
+        X_val_s = scaler.transform(X_val)
+
+        ols = LinearRegression()
+        ols.fit(X_tr_s, y_tr)
+        preds = ols.predict(X_val_s)
+
+        mse = mean_squared_error(y_val, preds)
+        fold_mses.append(mse)
+        print(f"  Fold {fold}: MSE = {mse:.4f}")
+
+    cv_k = np.mean(fold_mses)
+    cv_results[model_name] = {"fold_mses": fold_mses, "cv_k": cv_k}
+    print(f"  CV({K}) = {cv_k:.4f}  (RMSE = {np.sqrt(cv_k):.4f})")
+
+# ── 4. Select model with smallest CV(K) ──────────────────────────────────────
 print()
+print("=" * 55)
+print("  Model Selection Summary")
+print("=" * 55)
+for name, res in sorted(cv_results.items(), key=lambda x: x[1]["cv_k"]):
+    marker = "  ← SELECTED" if res["cv_k"] == min(r["cv_k"] for r in cv_results.values()) else ""
+    print(f"  {name:<28}  CV({K}) = {res['cv_k']:.4f}{marker}")
 
-# ── 3. Final model — fit on ALL data with statsmodels ────────────────────────
-scaler_full = StandardScaler()
-X_scaled = scaler_full.fit_transform(X_arr)
-X_sm = sm.add_constant(X_scaled)            # statsmodels needs intercept column
+best_name = min(cv_results, key=lambda x: cv_results[x]["cv_k"])
+print(f"\n  Selected: {best_name}")
 
-ols_result = sm.OLS(y, X_sm).fit()
+# ── 5. Refit selected model on ALL data ───────────────────────────────────────
+best_features = candidate_models[best_name]
+X_best = X_full[best_features].values.astype(float)
 
-# ── 4. AIC ────────────────────────────────────────────────────────────────────
-aic = ols_result.aic
-print("=" * 45)
-print("  Final Model (fit on full sample)")
-print("=" * 45)
-print(f"  AIC            : {aic:.4f}")
+scaler_final = StandardScaler()
+X_best_scaled = scaler_final.fit_transform(X_best)
+X_sm = sm.add_constant(X_best_scaled)
 
-# ── 5. Adjusted R² ───────────────────────────────────────────────────────────
-adj_r2 = ols_result.rsquared_adj
-r2     = ols_result.rsquared
-print(f"  R²             : {r2:.4f}")
-print(f"  Adjusted R²    : {adj_r2:.4f}")
+final = sm.OLS(y, X_sm).fit()
+
 print()
+print("=" * 55)
+print(f"  Final Model: {best_name}")
+print("=" * 55)
+print(f"  AIC          : {final.aic:.4f}")
+print(f"  R²           : {final.rsquared:.4f}")
+print(f"  Adjusted R²  : {final.rsquared_adj:.4f}")
 
 # ── 6. VIF ────────────────────────────────────────────────────────────────────
-print("=" * 45)
-print("  Variance Inflation Factors (VIF)")
-print("=" * 45)
-
-vif_data = pd.DataFrame({
-    "feature": feature_names,
-    "VIF": [
-        variance_inflation_factor(X_scaled, i)
-        for i in range(X_scaled.shape[1])
-    ]
+print()
+print("  Variance Inflation Factors")
+print("  " + "─" * 35)
+vif_df = pd.DataFrame({
+    "feature": best_features,
+    "VIF": [variance_inflation_factor(X_best_scaled, i)
+            for i in range(X_best_scaled.shape[1])]
 }).sort_values("VIF", ascending=False)
+print(vif_df.to_string(index=False))
+print("  (VIF > 10 = multicollinearity concern)")
 
-print(vif_data.to_string(index=False))
-print()
-print("  Rule of thumb: VIF > 10 → high multicollinearity")
-print()
+# ── 7. Plots ──────────────────────────────────────────────────────────────────
+fitted    = final.fittedvalues
+residuals = final.resid
 
-# ── 7. Diagnostic plots ───────────────────────────────────────────────────────
-fitted    = ols_result.fittedvalues
-residuals = ols_result.resid
+fig, axes = plt.subplots(2, 2, figsize=(13, 10))
+fig.suptitle(f"OLS Diagnostics — {best_name}", fontsize=13, fontweight="bold")
 
-fig = plt.figure(figsize=(14, 10))
-fig.suptitle("OLS Diagnostic Plots — Spotify Track Popularity", fontsize=14, fontweight="bold", y=1.01)
-gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.4, wspace=0.35)
+# Plot 1: CV(K) comparison across models
+ax = axes[0, 0]
+short_names = [n.split(":")[0] for n in cv_results]
+cv_vals     = [cv_results[n]["cv_k"] for n in cv_results]
+colors      = ["#C44E52" if n == best_name else "#4C72B0" for n in cv_results]
+bars = ax.bar(short_names, cv_vals, color=colors, edgecolor="white")
+ax.set_title(f"CV({K}) by Candidate Model")
+ax.set_ylabel(f"CV({K}) MSE")
+for bar, v in zip(bars, cv_vals):
+    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.2,
+            f"{v:.2f}", ha="center", fontsize=9)
+ax.legend(handles=[
+    plt.Rectangle((0,0),1,1, color="#C44E52", label="Selected"),
+    plt.Rectangle((0,0),1,1, color="#4C72B0", label="Other")
+], fontsize=8)
 
-# — Plot 1: Residuals vs Fitted —
-ax1 = fig.add_subplot(gs[0, 0])
-ax1.scatter(fitted, residuals, alpha=0.4, s=18, color="#4C72B0", edgecolors="none")
-ax1.axhline(0, color="red", linewidth=1.2, linestyle="--")
+# Plot 2: Residuals vs Fitted
+ax = axes[0, 1]
+ax.scatter(fitted, residuals, alpha=0.4, s=16, color="#4C72B0", edgecolors="none")
+ax.axhline(0, color="red", linewidth=1.2, linestyle="--")
 z = np.polyfit(fitted, residuals, 2)
-x_line = np.linspace(fitted.min(), fitted.max(), 300)
-ax1.plot(x_line, np.polyval(z, x_line), color="orange", linewidth=1.5, label="loess approx")
-ax1.set_xlabel("Fitted Values")
-ax1.set_ylabel("Residuals")
-ax1.set_title("Residuals vs Fitted")
-ax1.legend(fontsize=8)
+xline = np.linspace(fitted.min(), fitted.max(), 300)
+ax.plot(xline, np.polyval(z, xline), color="orange", linewidth=1.5)
+ax.set_xlabel("Fitted Values")
+ax.set_ylabel("Residuals")
+ax.set_title("Residuals vs Fitted")
 
-# — Plot 2: Fitted vs Actual —
-ax2 = fig.add_subplot(gs[0, 1])
-ax2.scatter(y, fitted, alpha=0.4, s=18, color="#55A868", edgecolors="none")
+# Plot 3: Fitted vs Actual
+ax = axes[1, 0]
+ax.scatter(y, fitted, alpha=0.4, s=16, color="#55A868", edgecolors="none")
 lims = [min(y.min(), fitted.min()), max(y.max(), fitted.max())]
-ax2.plot(lims, lims, "r--", linewidth=1.2, label="Perfect fit (y=x)")
-ax2.set_xlabel("Actual Values")
-ax2.set_ylabel("Fitted Values")
-ax2.set_title("Fitted vs Actual")
-ax2.legend(fontsize=8)
+ax.plot(lims, lims, "r--", linewidth=1.2, label="y = x")
+ax.set_xlabel("Actual")
+ax.set_ylabel("Fitted")
+ax.set_title("Fitted vs Actual")
+ax.legend(fontsize=8)
 
-# — Plot 3: Histogram of Residuals —
-ax3 = fig.add_subplot(gs[1, 0])
-ax3.hist(residuals, bins=35, color="#C44E52", edgecolor="white", linewidth=0.5, alpha=0.85)
-ax3.axvline(0, color="black", linewidth=1.2, linestyle="--")
-ax3.set_xlabel("Residual")
-ax3.set_ylabel("Count")
-ax3.set_title("Residual Distribution")
+# Plot 4: QQ plot of residuals
+ax = axes[1, 1]
+sm.qqplot(residuals, line="s", ax=ax, alpha=0.4, markersize=4)
+ax.set_title("QQ Plot — Residuals")
 
-# — Plot 4: 5-Fold MSE bar chart —
-ax4 = fig.add_subplot(gs[1, 1])
-bars = ax4.bar(
-    [f"Fold {i}" for i in range(1, 6)],
-    fold_mses,
-    color=["#4C72B0","#55A868","#C44E52","#8172B2","#CCB974"],
-    edgecolor="white"
-)
-ax4.axhline(np.mean(fold_mses), color="black", linewidth=1.2, linestyle="--", label=f"Mean = {np.mean(fold_mses):.2f}")
-ax4.set_ylabel("MSE")
-ax4.set_title("5-Fold CV — MSE per Fold")
-ax4.legend(fontsize=8)
-for bar, val in zip(bars, fold_mses):
-    ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.3,
-             f"{val:.1f}", ha="center", va="bottom", fontsize=8)
-
-plt.savefig("spotify_diagnostics.png", dpi=150, bbox_inches="tight")
+plt.tight_layout()
+plt.savefig("spotify_cv_selection.png", dpi=150, bbox_inches="tight")
 plt.show()
-print("Plot saved → spotify_diagnostics.png")
+print("\nPlot saved → spotify_cv_selection.png")
